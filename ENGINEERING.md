@@ -2,6 +2,14 @@
 
 *This file is a living document. It captures the decisions, trade-offs, and reasoning behind TurboLB. It exists for two reasons: to help me internalize what I learn, and to provide a record for anyone who wants to understand why the code looks the way it does.*
 
+
+
+## Table of Contents
+
+1. [2026-07-08 — Project Genesis](#2026-07-08--project-genesis)
+2. [2026-07-09 — Non-Blocking I/O with epoll](#2026-07-09--non-blocking-io-with-epoll)
+3. [2026-07-09 — Project Structure](#2026-07-09--project-structure)
+
 ---
 
 ## 2026-07-08 — Project Genesis
@@ -60,3 +68,88 @@ This is intentionally the starting point. It establishes that the build system w
 - If you are reading this and something is broken, start by checking the socket flags. Most bugs come from forgetting to set `O_NONBLOCK`.
 - The `errno` is your friend. Print it.
 - When in doubt, trace the system calls with `strace`.
+
+
+
+
+## 2026-07-09 — Non-Blocking I/O with epoll
+
+### What Changed
+
+The server has been refactored from a blocking, single-client-at-a-time listener into an event-driven, non-blocking server that can handle thousands of simultaneous connections.
+
+### The Problem That Drove This Change
+
+The previous implementation used blocking system calls:
+
+- `accept()` blocked until a client connected
+- `recv()` / `send()` blocked until data was available or buffer space was free
+- Slow clients blocked all other clients (head-of-line blocking)
+
+In real-world load balancers like NGINX and HAProxy, this approach would not scale beyond a few dozen connections.
+
+### The Solution
+
+The server now uses:
+
+1. **Non-blocking sockets** — system calls return immediately with an error (usually `EAGAIN`/`EWOULDBLOCK`) if they can't complete immediately.
+2. **epoll** — the kernel notifies the server when sockets are ready for I/O.
+3. **Edge-triggered events** (`EPOLLET`) for client sockets — guarantees we receive events only when the state changes, reducing the number of system calls.
+
+### Implementation Details
+
+The `Server` class now handles:
+
+- **Listening socket**: registered with `EPOLLIN` (level-triggered). When `epoll_wait()` returns with this event, we call `handleNewConnection()` to accept all pending connections.
+- **Client sockets**: registered with `EPOLLIN | EPOLLET` (edge-triggered). When `epoll_wait()` returns with this event, we call `handleClientData()` to read all available data.
+
+### Key Design Decisions
+
+| Decision | Why |
+|---|---|
+| **Single epoll instance** | Simpler than multiple event loops; can scale to ~10k connections with this approach. |
+| **Edge-triggered on clients** | Fewer `epoll_wait()` wakeups; forces us to read all data each time, which is more efficient. |
+| **Level-triggered on listening socket** | Safer for accepting connections; we won't miss any if we don't handle them all in one go. |
+| **Single-threaded event loop** | Simpler to reason about; no locks; matches the architecture of NGINX. |
+| **RAII for all file descriptors** | Destructor cleans up the listening socket and the epoll instance automatically. |
+
+### What I Learned
+
+1. **Non-blocking I/O changes the mental model** — we no longer write linear code (connect → read → write → close). Instead, we respond to events, and state machines become essential.
+
+2. **epoll is powerful but requires discipline** — you must handle `EAGAIN` correctly. Forgetting to loop on `accept()` or `recv()` with edge-triggered events leads to missed events and lost data.
+
+3. **System calls are expensive** — a well-designed event loop reduces the number of `epoll_wait()` calls by batching events.
+
+4. **The self-pipe trick is needed for graceful shutdown** — `epoll_wait()` blocks indefinitely; a simple `running_` flag won't interrupt it. I'll need to add an eventfd or self-pipe to interrupt the loop when `stop()` is called.
+
+### What's Next
+
+The server can now handle multiple clients concurrently. The next step is to:
+
+1. **Implement the proxy logic** — forward client requests to a backend server.
+2. **Add a backend pool** — round-robin selection among multiple backends.
+3. **Support HTTP parsing** — so we can route based on the request path or headers.
+
+### Code References
+
+The key pieces are:
+
+- `Server::setNonBlocking()` — makes sockets non-blocking using `fcntl()`.
+- `Server::setupEpoll()` — creates the epoll instance.
+- `Server::handleNewConnection()` — accepts all pending connections with `accept()`.
+- `Server::handleClientData()` — reads all available data with `recv()`.
+- `Server::run()` — the main event loop that calls `epoll_wait()`.
+
+### Notes for Future Me
+
+- Always check `errno` after system calls. `EAGAIN` and `EWOULDBLOCK` are not errors — they mean "try again later".
+- With edge-triggered events, you must read until you get `EAGAIN`. Otherwise, you'll miss data.
+- The current `stop()` implementation doesn't interrupt `epoll_wait()`. This means the server won't exit until a connection arrives or a signal is received. Add an eventfd or use the self-pipe trick in the next iteration.
+- Keep the event loop single-threaded for now; adding threads adds complexity with locking and shared state.
+
+---
+
+## 2026-07-09 — Project Structure
+
+The codebase has been refactored into a cleaner structure:
