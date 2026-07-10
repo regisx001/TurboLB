@@ -317,7 +317,7 @@ bool Server::initialize()
 
     // Step 4: Start listening
     // Backlog of 10: kernel queues up to 10 pending connections
-    if (listen(server_fd_, 10) < 0)
+    if (listen(server_fd_, SOMAXCONN) < 0)
     {
         std::cerr << "listen() failed\n";
         return false;
