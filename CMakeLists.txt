@@ -11,7 +11,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_executable(TurboLB
     src/main.cpp
-    include/lb/Server.cpp
+    src/server/Server.cpp
+    src/http/HttpParser.cpp
 )
 
 
@@ -28,7 +29,9 @@ enable_testing()
 
 add_executable(tests
     tests/test_server.cpp
-    include/lb/Server.cpp
+    tests/test_http_parser.cpp
+    src/server/Server.cpp
+    src/http/HttpParser.cpp
 )
 
 target_include_directories(tests PRIVATE include)

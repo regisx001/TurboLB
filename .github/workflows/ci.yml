@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.compiler.name }} / ${{ matrix.build-type }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - name: GCC 14
+            cxx: g++-14
+            cc: gcc-14
+            packages: g++-14
+          - name: Clang 18
+            cxx: clang++-18
+            cc: clang-18
+            packages: clang-18
+        build-type:
+          - Debug
+          - Release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            ${{ matrix.compiler.packages }} \
+            cmake \
+            ninja-build
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler.cxx }} \
+            -DCMAKE_C_COMPILER=${{ matrix.compiler.cc }} \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload compile_commands.json (Debug only)
+        if: matrix.build-type == 'Debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile_commands-${{ matrix.compiler.name }}.json
+          path: build/compile_commands.json
