@@ -9,6 +9,8 @@
 1. [2026-07-08 — Project Genesis](#2026-07-08--project-genesis)
 2. [2026-07-09 — Non-Blocking I/O with epoll](#2026-07-09--non-blocking-io-with-epoll)
 3. [2026-07-09 — Project Structure](#2026-07-09--project-structure)
+4. [2026-07-10 — Testing Infrastructure & Makefile](#2026-07-10--testing-infrastructure--makefile)
+5. [2026-07-12 — HTTP Request Parsing & Debug Task Fix](#2026-07-12--http-request-parsing--debug-task-fix)
 
 ---
 
@@ -247,3 +249,153 @@ The test suite gives confidence to make changes. Next steps:
 1. Add an `eventfd` or self-pipe to the `Server` class so `stop()` can interrupt `epoll_wait()` immediately — no more `wake_server()` hack.
 2. Replace the echo logic with a real proxy: client → TurboLB → backend.
 3. Add a backend pool with round-robin selection.
+
+---
+
+## 2026-07-12 — HTTP Request Parsing & Debug Task Fix
+
+### What Changed
+
+Two things happened today:
+
+1. **`main.cpp`** was rewritten to parse incoming HTTP requests and print them to the console, instead of forwarding them to a backend server.
+2. **`tasks.json`** was fixed so the default "C/C++: g++ build active file" task actually compiles the project correctly.
+
+### The HTTP Parsing Problem
+
+The original `main.cpp` connected to a backend socket on port 9001, forwarded raw HTTP bytes to it, read the response, and sent it back to the client. This was a forward proxy in its simplest form.
+
+I wanted to understand what the server was actually receiving — so I swapped the forwarding logic for the existing `HttpParser` class (which was already written but never used from `main.cpp`).
+
+### The Implementation
+
+The new flow in `main.cpp`:
+
+1. Accept a TCP connection (unchanged).
+2. Receive raw bytes into a buffer (unchanged).
+3. Feed the buffer into `HttpParser::consume()`.
+4. If parsing completes (or errors), print the structured request:
+   - **Method** (GET, POST, etc.)
+   - **URI** (the request path)
+   - **Version** (HTTP/1.1)
+   - **Headers** (all key-value pairs, keys lowercased)
+   - **Body** (if present, e.g. for POST/PUT)
+5. Send a minimal `200 OK` response so the client doesn't hang.
+6. Close the connection.
+
+The `HttpParser` class (in `src/http/HttpParser.cpp`) is an incremental, state-machine-based parser that handles:
+- **REQUEST_LINE state** — parses `METHOD URI VERSION`
+- **HEADERS state** — parses header lines until blank line, tracks `content-length`
+- **BODY state** — reads exactly `content-length` bytes
+- **COMPLETE state** — signals the request is fully parsed
+- **ERROR state** — malformed request
+
+### Why main.cpp Instead of the Server Class
+
+The `Server` class (`src/server/Server.cpp`) is the epoll-based event-driven server. It currently echoes data back. The HTTP parsing was added to `main.cpp` to keep things simple and observable — no event loop complexity, just blocking accept + parse + print.
+
+Eventually, the HTTP parsing should move into the `Server` class's `handleClientData()` method, so the event-driven server can route requests based on URI or headers.
+
+### The Build Task Bug
+
+When I added `#include "lb/HttpParser.hpp"` to `main.cpp`, the default build task (**C/C++: g++ build active file**) failed with:
+
+```
+fatal error: lb/HttpParser.hpp: No such file or directory
+```
+
+The task was compiling just `main.cpp` with no `-I` flags and none of the other `.cpp` files. The CMake task worked fine because `CMakeLists.txt` already had:
+
+```cmake
+target_include_directories(TurboLB PRIVATE ${PROJECT_SOURCE_DIR}/include)
+```
+
+### The Fix
+
+Updated `.vscode/tasks.json` to:
+
+1. Add `-I ${workspaceFolder}/include` so the parser header can be found.
+2. Include all three source files (`main.cpp`, `HttpParser.cpp`, `Server.cpp`) so the linker resolves all symbols.
+3. Output the binary to `build/TurboLB` to be consistent with the CMake output path.
+
+```json
+{
+    "type": "cppbuild",
+    "label": "C/C++: g++ build active file",
+    "command": "/usr/bin/g++",
+    "args": [
+        "-fdiagnostics-color=always",
+        "-g",
+        "-I",
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src/main.cpp",
+        "${workspaceFolder}/src/http/HttpParser.cpp",
+        "${workspaceFolder}/src/server/Server.cpp",
+        "-o",
+        "${workspaceFolder}/build/TurboLB"
+    ],
+    "options": {
+        "cwd": "${workspaceFolder}"
+    }
+}
+```
+
+### Verification
+
+Tested with curl:
+
+```
+$ curl -v http://localhost:8080/
+*   Trying 127.0.0.1:8080...
+* Connected to localhost (127.0.0.1) port 8080
+> GET / HTTP/1.1
+> Host: localhost:8080
+> User-Agent: curl/8.21.0
+> Accept: */*
+>
+* Request completely sent off
+< HTTP/1.1 200 OK
+< Content-Type: text/plain
+< Content-Length: 15
+< Connection: close
+<
+Request logged!
+* Closing connection
+```
+
+Server console output:
+
+```
+===== Client connected: 127.0.0.1:45906 =====
+--- Parsed HTTP Request ---
+Method:  GET
+URI:     /
+Version: HTTP/1.1
+Headers:
+  accept: */*
+  user-agent: curl/8.21.0
+  host: localhost:8080
+--------------------------
+Client disconnected
+```
+
+### Key Decisions
+
+| Decision | Why |
+|---|---|
+| **Parse in main.cpp, not Server class** | Keep it simple and observable; Server is still an echo server. |
+| **Single recv() call** | HTTP requests from curl usually fit in one TCP segment. A real parser would need to handle partial reads, but for development this is fine. |
+| **Connection: close response** | Simplest possible response — no keep-alive state to manage. |
+| **Fixed g++ task instead of removing it** | The CMake task was correct but the default build keyboard shortcut (Ctrl+Shift+B) ran the broken g++ task. Now both work. |
+
+### What I Learned
+
+1. **The HttpParser I already wrote works** — it was sitting in `src/http/` untested from main. Using it confirmed the state machine handles real curl requests.
+2. **Default build tasks matter** — VS Code's "C/C++: g++ build active file" is fine for single-file programs, but multi-file projects need explicit source lists and include paths. CMake is the canonical build system, but the editor task also needs to be correct for quick iterations.
+3. **Parsing HTTP by hand teaches you the format** — seeing the structured output confirms how headers are delimited, how `content-length` controls body parsing, and what a blank-line-terminated header section looks like on the wire.
+
+### What's Next
+
+1. Move HTTP parsing into the `Server` class so the event-driven server can inspect and route requests.
+2. Reintroduce the backend connection logic — but this time route based on the parsed URI, not raw byte forwarding.
+3. Add a round-robin backend pool.
