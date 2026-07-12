@@ -4,13 +4,31 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <sstream>
-#include "lb/HttpParser.hpp"
 
 using namespace std;
 
 int main()
 {
+    // CONNECT TO BACKEND SOCKET
+
+    const int BACKEND_PORT = 9001;
+    int backend_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    sockaddr_in backend{};
+    backend.sin_family = AF_INET;
+    backend.sin_port = htons(BACKEND_PORT);
+
+    inet_pton(AF_INET, "127.0.0.1", &backend.sin_addr);
+
+    if (connect(backend_fd,
+                (sockaddr *)&backend,
+                sizeof(backend)) < 0)
+    {
+        cout << "Failed to connect to backend socket" << endl;
+    }
+
+    cout << "Connected to backend at port " << BACKEND_PORT << endl;
+
     // creating socket
     int server_df = socket(AF_INET, SOCK_STREAM, 0);
     if (server_df < 0)
@@ -70,49 +88,27 @@ int main()
 
         char clientIP[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, clientIP, sizeof(clientIP));
-        cout << "\n===== Client connected: " << clientIP << ":"
-             << ntohs(client_addr.sin_port) << " =====" << endl;
+        cout << "Client connected: " << clientIP << ":"
+             << ntohs(client_addr.sin_port) << endl;
 
         // receiving data from client
-        char buffer[8192] = {0};
+        char buffer[4096] = {0};
         ssize_t bytesRead = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
         if (bytesRead > 0)
         {
-            // Parse the HTTP request
-            HttpParser parser;
-            size_t consumed = parser.consume(buffer, bytesRead);
+            cout << "Request from client (" << bytesRead << " bytes)" << endl;
 
-            if (parser.getState() == ParseState::COMPLETE ||
-                parser.getState() == ParseState::ERROR)
+            // forward request to backend
+            send(backend_fd, buffer, bytesRead, 0);
+
+            // read response from backend
+            char respBuffer[4096] = {0};
+            ssize_t backendBytes = recv(backend_fd, respBuffer, sizeof(respBuffer) - 1, 0);
+            if (backendBytes > 0)
             {
-                const HttpRequest &req = parser.getRequest();
-
-                cout << "--- Parsed HTTP Request ---" << endl;
-                cout << "Method:  " << req.methodString() << endl;
-                cout << "URI:     " << req.uri << endl;
-                cout << "Version: " << req.version << endl;
-                cout << "Headers:" << endl;
-                for (const auto &[key, value] : req.headers)
-                {
-                    cout << "  " << key << ": " << value << endl;
-                }
-                if (!req.body.empty())
-                {
-                    cout << "Body:" << endl;
-                    cout << "  " << req.body << endl;
-                }
-                cout << "--------------------------" << endl;
+                cout << "Response from backend (" << backendBytes << " bytes)" << endl;
+                send(client_fd, respBuffer, backendBytes, 0);
             }
-
-            // Send a simple HTTP response so the client doesn't hang
-            string response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 15\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Request logged!";
-            send(client_fd, response.c_str(), response.size(), 0);
         }
 
         // closing the client socket
