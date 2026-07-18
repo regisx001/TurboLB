@@ -11,6 +11,7 @@
 3. [2026-07-09 — Project Structure](#2026-07-09--project-structure)
 4. [2026-07-10 — Testing Infrastructure & Makefile](#2026-07-10--testing-infrastructure--makefile)
 5. [2026-07-12 — HTTP Request Parsing & Debug Task Fix](#2026-07-12--http-request-parsing--debug-task-fix)
+6. [2026-07-18 — Configuration System (.properties)](#2026-07-18--configuration-system-properties)
 
 ---
 
@@ -399,3 +400,106 @@ Client disconnected
 1. Move HTTP parsing into the `Server` class so the event-driven server can inspect and route requests.
 2. Reintroduce the backend connection logic — but this time route based on the parsed URI, not raw byte forwarding.
 3. Add a round-robin backend pool.
+
+---
+
+## 2026-07-18 — Configuration System (.properties)
+
+### What Changed
+
+Added a `Config` class that reads a `.properties` file (key=value format) to externalize all tunables. This was done *before* implementing the load-balancing logic so that backends, ports, and algorithms are data-driven from the start.
+
+### New Files
+
+| File | Role |
+|---|---|
+| `include/lb/Config.hpp` | `Config` class declaration |
+| `src/config/Config.cpp` | `.properties` parser + `Config::load()` factory |
+| `.turbolb/config.properties` | Default configuration file |
+
+### The Config Class
+
+The API is simple — key/value lookups with type coercion:
+
+```cpp
+Config config("path/to/config.properties");
+
+auto host = config.getString("server.host");       // throws if missing
+auto port = config.getInt("server.port", 8080);    // default if missing
+auto debug = config.getBool("server.debug");       // "true"/"false"/"1"/"0"
+auto workers = config.getInt("thread.pool.size");  // via std::stoi
+```
+
+The `.properties` format supports:
+- `key=value` pairs
+- `#` and `;` comment lines
+- Whitespace trimming around keys and values
+- Case-insensitive boolean parsing (`true`, `false`, `yes`, `no`, `1`, `0`)
+
+### Config Path Resolution
+
+`Config::load()` is a static factory that resolves the config file with this precedence:
+
+1. `--config <path>` command-line flag
+2. `TURBOLB_CONFIG` environment variable
+3. `PROJECT_ROOT/.turbolb/config.properties` (development default)
+
+This means during development, the config is always found regardless of the working directory (because `PROJECT_ROOT` is baked in by the build system). In production, you'd override with `--config /etc/turbolb/config.properties` or `TURBOLB_CONFIG=/etc/turbolb/config.properties`.
+
+### The PROJECT_ROOT Define
+
+The build system passes the project root as a preprocessor define so `Config::load()` can find the default config file relative to the project root, not the CWD:
+
+- **CMake**: `target_compile_definitions(... PROJECT_ROOT=${CMAKE_SOURCE_DIR})`
+- **tasks.json (g++)**: `-DPROJECT_ROOT=${workspaceFolder}`
+
+The value is a raw path (e.g. `/home/user/TurboLB`), not a string literal. `Config.cpp` uses the `XSTR`/`STRINGIFY` macro trick to convert it to a proper C++ string at compile time:
+
+```cpp
+#define XSTR(x) STRINGIFY(x)
+#define STRINGIFY(x) #x
+
+configPath = std::filesystem::path(XSTR(PROJECT_ROOT)) / ".turbolb" / "config.properties";
+```
+
+### main.cpp Cleanup
+
+`main.cpp` was slimmed down from ~50 lines of hand-rolled config resolution to 10 lines:
+
+```cpp
+int main(int argc, char *argv[])
+{
+    auto config = Config::load(argc, argv);
+    auto host = config.getString("server.host");
+    auto port = config.getInt("server.port");
+    std::cout << "TurboLB starting on " << host << ":" << port << std::endl;
+    return 0;
+}
+```
+
+### Key Decisions
+
+| Decision | Why |
+|---|---|
+| **`.properties` over JSON/YAML** | Zero dependencies — no JSON or YAML library needed. Simple enough for a learning project. |
+| **`PROJECT_ROOT` define** | Lets the dev default config path work from any CWD. Production deployments override via env var or `--config`. |
+| **`XSTR/STRINGIFY` macro trick** | Converts a raw preprocessor value (e.g. `/home/user/TurboLB`) into a C++ string literal without needing quotes in the `-D` flag. |
+| **Static `Config::load()` factory** | Keeps the precedence logic inside `Config` where it belongs, not in `main()`. |
+| **`properties_` naming convention** | Renamed from `properties` to follow the trailing-underscore convention for class members. |
+
+### What I Learned
+
+1. **Preprocessor defines for paths are tricky** — `-DPATH=/foo` makes `PATH` expand to `/foo`, which is not valid C++ syntax. `-DPATH="/foo"` makes it a string literal. The `XSTR` trick lets you use the raw form and stringify it in code.
+
+2. **JSON parsing adds a dependency** — for a learning project, a flat key-value format is sufficient and avoids pulling in nlohmann/json or writing a recursive descent parser.
+
+3. **Factory methods encapsulate construction logic** — `Config::load()` hides the precedence chain from callers. Adding a new resolution strategy (e.g., a system config path) doesn't touch `main.cpp`.
+
+4. **The `.turbolb/` directory** — following the convention of dot-directories for project-local config (like `.vscode/`, `.git/`, `.github/`), the config lives in `.turbolb/config.properties`.
+
+### What's Next
+
+Now that the config system is in place, the next step is to implement the actual load-balancing logic:
+1. Read backend list from config and connect to them.
+2. Implement round-robin request forwarding.
+3. Add health checks to detect dead backends.
