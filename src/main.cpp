@@ -1,127 +1,13 @@
-#include <cstring>
 #include <iostream>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sstream>
-#include "lb/HttpParser.hpp"
+#include "lb/Config.hpp"
 
-using namespace std;
-
-int main()
+int main(int argc, char *argv[])
 {
-    // creating socket
-    int server_df = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_df < 0)
-    {
-        cerr << "Failed to create socket" << endl;
-        return 1;
-    }
+    auto config = Config::load(argc, argv);
 
-    // allow reuse of the address (avoid "address already in use")
-    int opt = 1;
-    if (setsockopt(server_df, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-    {
-        cerr << "Failed to set socket options" << endl;
-        close(server_df);
-        return 1;
-    }
+    auto host = config.getString("server.host");
+    auto port = config.getInt("server.port");
 
-    // specifying the address
-    sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(8080);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    // binding socket
-    if (bind(server_df, (struct sockaddr *)&addr,
-             sizeof(addr)) < 0)
-    {
-        cerr << "Failed to bind socket" << endl;
-        close(server_df);
-        return 1;
-    }
-
-    // listening to the assigned socket
-    if (listen(server_df, 5) < 0)
-    {
-        cerr << "Failed to listen on socket" << endl;
-        close(server_df);
-        return 1;
-    }
-
-    cout << "Server listening on port 8080..." << endl;
-
-    // accepting connections in a loop
-    while (true)
-    {
-        sockaddr_in client_addr;
-        socklen_t clientAddrLen = sizeof(client_addr);
-
-        int client_fd = accept(server_df,
-                               (struct sockaddr *)&client_addr,
-                               &clientAddrLen);
-        if (client_fd < 0)
-        {
-            cerr << "Failed to accept connection" << endl;
-            continue;
-        }
-
-        char clientIP[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_addr.sin_addr, clientIP, sizeof(clientIP));
-        cout << "\n===== Client connected: " << clientIP << ":"
-             << ntohs(client_addr.sin_port) << " =====" << endl;
-
-        // receiving data from client
-        char buffer[8192] = {0};
-        ssize_t bytesRead = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-        if (bytesRead > 0)
-        {
-            // Parse the HTTP request
-            HttpParser parser;
-            size_t consumed = parser.consume(buffer, bytesRead);
-
-            if (parser.getState() == ParseState::COMPLETE ||
-                parser.getState() == ParseState::ERROR)
-            {
-                const HttpRequest &req = parser.getRequest();
-
-                cout << "--- Parsed HTTP Request ---" << endl;
-                cout << "Method:  " << req.methodString() << endl;
-                cout << "URI:     " << req.uri << endl;
-                cout << "Version: " << req.version << endl;
-                cout << "Headers:" << endl;
-                for (const auto &[key, value] : req.headers)
-                {
-                    cout << "  " << key << ": " << value << endl;
-                }
-                if (!req.body.empty())
-                {
-                    cout << "Body:" << endl;
-                    cout << "  " << req.body << endl;
-                }
-                cout << "--------------------------" << endl;
-            }
-
-            // Send a simple HTTP response so the client doesn't hang
-            string response =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 15\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Request logged!";
-            send(client_fd, response.c_str(), response.size(), 0);
-        }
-
-        // closing the client socket
-        close(client_fd);
-        cout << "Client disconnected" << endl;
-    }
-
-    // closing the server socket (unreachable in this loop, but good practice)
-    close(server_df);
-
+    std::cout << "TurboLB starting on " << host << ":" << port << std::endl;
     return 0;
 }

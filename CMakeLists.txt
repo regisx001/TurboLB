@@ -13,6 +13,8 @@ add_executable(TurboLB
     src/main.cpp
     src/server/Server.cpp
     src/http/HttpParser.cpp
+    include/lb/Config.hpp
+    src/config/Config.cpp
 )
 
 
@@ -21,8 +23,7 @@ target_include_directories(TurboLB
         ${PROJECT_SOURCE_DIR}/include
 )
 
-
-
+target_compile_definitions(TurboLB PRIVATE PROJECT_ROOT=${CMAKE_SOURCE_DIR})
 
 # TESTING
 enable_testing()

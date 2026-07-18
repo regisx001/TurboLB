@@ -45,9 +45,11 @@
 			"args": [
 				"-fdiagnostics-color=always",
 				"-g",
+				"-DPROJECT_ROOT=${workspaceFolder}",
 				"-I",
 				"${workspaceFolder}/include",
 				"${workspaceFolder}/src/main.cpp",
+				"${workspaceFolder}/src/config/Config.cpp",
 				"${workspaceFolder}/src/http/HttpParser.cpp",
 				"${workspaceFolder}/src/server/Server.cpp",
 				"-o",

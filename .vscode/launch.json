@@ -6,7 +6,9 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/TurboLB",
-            "args": [],
+            "args": [
+                "--config /home/regisx001/TurboLB/.turbolb/config.properties"
+            ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
