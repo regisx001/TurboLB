@@ -51,7 +51,7 @@ TurboLB/
 
 ## Requirements
 
-- **JDK:** 21+ (uses Java NIO, records, sealed classes preview)
+- **JDK:** 21+
 - **Build:** Maven 3.8+
 - **OS:** Linux / macOS / Windows (any with JDK 21)
 
@@ -68,6 +68,7 @@ make
 
 ```bash
 make run
+# or: mvn exec:java
 # or: java -jar target/turbolb-1.0-SNAPSHOT.jar
 ```
 
@@ -75,6 +76,9 @@ With a custom config:
 
 ```bash
 java -jar target/turbolb-1.0-SNAPSHOT.jar --config /path/to/config.properties
+# or via environment variable:
+export TURBOLB_CONFIG=/path/to/config.properties
+make run
 ```
 
 ### Test
@@ -83,8 +87,6 @@ In another terminal:
 
 ```bash
 curl -v http://localhost:8080/
-# or
-telnet localhost 8080
 ```
 
 You should see server output:
@@ -118,62 +120,52 @@ make test
 
 ### I/O Model
 - **Event-driven** using Java NIO `Selector` — scales to thousands of concurrent connections
-- **Single-threaded** event loop for simplicity; matches original C++ epoll architecture
+- **Single-threaded** event loop for simplicity
 - **Level-triggered** by default (Java NIO semantics) — read-all pattern used in handlers
-
-### C++ → Java Mapping
-
-| C++ Concept | Java Equivalent |
-|---|---|
-| `epoll` + `epoll_wait()` | `java.nio.channels.Selector` + `select()` |
-| `fcntl(_, O_NONBLOCK)` | `configureBlocking(false)` |
-| `SO_REUSEADDR` | `StandardSocketOptions.SO_REUSEADDR` |
-| Self-pipe / eventfd for wakeup | Loopback `SocketChannel` wakeup channel |
-| RAII / destructors | `AutoCloseable` + `try-with-resources` |
-| `errno` / `EAGAIN` | Non-blocking reads returning -1 / empty |
-| C++23 `std::string` | `java.lang.String` / `StringBuilder` |
-| CMake + Ninja | Maven |
 
 ### Configuration
 - **`.properties` format** (key=value) — zero dependencies
-- **Path resolution**: `--config <path>` → `TURBOLB_CONFIG` env var → default
-- **Type coercion**: `getString()`, `getInt()`, `getBool()` with defaults
+- **Path resolution**: `--config <path>` → `TURBOLB_CONFIG` env var → `.turbolb/config.properties`
+- **Type coercion**: `getString()`, `getInt()`, `getBool()` with optional defaults
 
 ### Testing
-- **JUnit 5** with parameterized tests, `@TempDir` for isolated files
+- **JUnit 5** with `@TempDir` for isolated file I/O tests
 - **Unique ports** per integration test via `AtomicInteger` counter
-- **Real sockets, no mocking** — tests verify end-to-end behavior
+- **Real TCP sockets** — tests verify end-to-end behavior
 
 ### HTTP Parsing
 - Hand-rolled state machine for HTTP/1.1 (no external dependencies)
 
-### Configuration
-- JSON format using `nlohmann-json` (optional)
-
 ## Development
 
-### Build Commands
+### Useful Commands
 
 ```bash
-# Clean build
-rm -rf build && mkdir build && cd build
-cmake -G Ninja ..
-ninja
+# Build
+mvn compile
 
-# Run
-./TurboLB
+# Run tests
+mvn test
 
-# Debug build
-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug ..
-ninja
+# Package JAR
+mvn package
+
+# Run packaged JAR
+java -jar target/turbolb-1.0-SNAPSHOT.jar
+
+# Clean build artifacts
+mvn clean
 ```
+
+### Debugging with VS Code
+
+Open the project in VS Code, set breakpoints, and press `F5` (or use the Run view). A launch configuration is already provided in `.vscode/launch.json`.
 
 ### Useful Tools
 
-- **Valgrind:** `valgrind --leak-check=full ./TurboLB`
-- **strace:** `strace -f ./TurboLB`
 - **tcpdump:** `sudo tcpdump -i lo port 8080`
-- **perf:** `perf record ./TurboLB` then `perf report`
+- **jconsole:** `jconsole` — monitor JVM heap, threads, and GC
+- **VisualVM:** `jvisualvm` — profiler and heap dump analysis
 
 ## License
 
