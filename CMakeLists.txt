@@ -31,11 +31,14 @@ enable_testing()
 add_executable(tests
     tests/test_server.cpp
     tests/test_http_parser.cpp
+    tests/test_config.cpp
     src/server/Server.cpp
     src/http/HttpParser.cpp
+    src/config/Config.cpp
 )
 
 target_include_directories(tests PRIVATE include)
+target_compile_definitions(tests PRIVATE PROJECT_ROOT=${CMAKE_SOURCE_DIR})
 
 
 add_test(NAME server_tests COMMAND ${CMAKE_BINARY_DIR}/tests)
