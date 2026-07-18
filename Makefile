@@ -1,60 +1,57 @@
 # ──────────────────────────────────────────────────────────────
-# TurboLB — Top-level Makefile (CMake wrapper)
+# TurboLB — Top-level Makefile (Maven wrapper)
 #
-# This Makefile delegates everything to CMake so you don't have
-# to remember the cmake incantations.
+# This Makefile delegates everything to Maven so you don't have
+# to remember the mvn incantations.
 #
 # Usage:
-#   make              # configure + build  (default)
-#   make build        # build only (after configure)
-#   make test         # run tests via ctest
+#   make              # build the JAR  (default)
+#   make build        # build (alias for `make`)
+#   make test         # run all tests via Maven Surefire
 #   make run          # run the TurboLB server
-#   make clean        # remove the build directory
-#   make rebuild      # clean + build from scratch
-#   make verbose      # build with VERBOSE=1
+#   make clean        # remove the target/ directory
+#   make rebuild      # clean + full rebuild
+#   make verbose      # build with verbose output
+#   make package      # produce the JAR artifact
 # ──────────────────────────────────────────────────────────────
 
-CMAKE       := cmake
-BUILD_DIR   := build
-SRC_DIR     := .
-CONFIG      := -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+MVN         := mvn
+JAVA        := java
+JAR_FILE    := target/turbolb-1.0-SNAPSHOT.jar
 
-# Number of parallel jobs — use all available cores by default
-JOBS        := $(shell nproc 2>/dev/null || echo 4)
+.PHONY: all build test run clean rebuild verbose package
 
-.PHONY: all build test run clean rebuild verbose
-
-# ── Default target: configure (if needed) + build ────────────
+# ── Default target: build ─────────────────────────────────────
 all: build
 
-# ── Configure ─────────────────────────────────────────────────
-$(BUILD_DIR)/build.ninja $(BUILD_DIR)/Makefile:
-	@echo "── Configuring project with CMake ──"
-	$(CMAKE) -S $(SRC_DIR) -B $(BUILD_DIR) $(CONFIG)
-
 # ── Build ─────────────────────────────────────────────────────
-build: $(BUILD_DIR)/build.ninja
-	@echo "── Building ──"
-	$(CMAKE) --build $(BUILD_DIR) -- -j$(JOBS)
+build:
+	@echo "── Building TurboLB ──"
+	$(MVN) compile
 
 # ── Build with verbose output ─────────────────────────────────
-verbose: $(BUILD_DIR)/build.ninja
-	$(CMAKE) --build $(BUILD_DIR) --verbose -- -j$(JOBS)
+verbose:
+	$(MVN) compile -X
 
 # ── Run tests ─────────────────────────────────────────────────
-test: build
+test:
 	@echo "── Running tests ──"
-	cd $(BUILD_DIR) && ctest --output-on-failure
+	$(MVN) test
 
 # ── Run the server ────────────────────────────────────────────
-run: build
+run: package
 	@echo "── Starting TurboLB server ──"
-	$(BUILD_DIR)/TurboLB
+	$(JAVA) -jar $(JAR_FILE)
+
+# ── Package as JAR ────────────────────────────────────────────
+package:
+	@echo "── Packaging ──"
+	$(MVN) package -DskipTests
 
 # ── Clean ─────────────────────────────────────────────────────
 clean:
-	@echo "── Removing $(BUILD_DIR) ──"
-	rm -rf $(BUILD_DIR)
+	@echo "── Removing target/ ──"
+	rm -rf target/
 
 # ── Rebuild from scratch ──────────────────────────────────────
 rebuild: clean all

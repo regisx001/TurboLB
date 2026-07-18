@@ -12,6 +12,7 @@
 4. [2026-07-10 — Testing Infrastructure & Makefile](#2026-07-10--testing-infrastructure--makefile)
 5. [2026-07-12 — HTTP Request Parsing & Debug Task Fix](#2026-07-12--http-request-parsing--debug-task-fix)
 6. [2026-07-18 — Configuration System (.properties)](#2026-07-18--configuration-system-properties)
+7. [2026-07-18 — Java Port (Full Recreation)](#2026-07-18--java-port-full-recreation)
 
 ---
 
@@ -503,3 +504,160 @@ Now that the config system is in place, the next step is to implement the actual
 1. Read backend list from config and connect to them.
 2. Implement round-robin request forwarding.
 3. Add health checks to detect dead backends.
+
+---
+
+## 2026-07-18 — Java Port (Full Recreation)
+
+### What Changed
+
+The entire TurboLB project has been recreated from C++ to Java. The C++ source files (`main.cpp`, `Server.cpp`, `HttpParser.cpp`, `Config.cpp`, their headers, `CMakeLists.txt`, and the Catch2 test file) have been replaced with a complete Java implementation using Maven and JUnit 5.
+
+### New Java Files
+
+| File | Role | C++ Origin |
+|---|---|---|
+| `src/main/java/.../config/Config.java` | `.properties` file parser | `include/lb/Config.hpp` + `src/config/Config.cpp` |
+| `src/main/java/.../http/HttpParser.java` | State-machine HTTP parser | `include/lb/HttpParser.hpp` + `src/http/HttpParser.cpp` |
+| `src/main/java/.../server/Server.java` | NIO event-driven server | `include/lb/Server.hpp` + `src/server/Server.cpp` |
+| `src/main/java/.../App.java` | Entry point | `src/main.cpp` |
+| `src/test/java/.../config/ConfigTest.java` | Config unit tests (20 tests) | `test/test_server.cpp` (Config portion) |
+| `src/test/java/.../http/HttpParserTest.java` | HttpParser unit tests (20 tests) | New — parser-specific tests |
+| `src/test/java/.../server/ServerTest.java` | Server unit + integration tests (12 tests) | `test/test_server.cpp` |
+
+### The C++ → Java Architecture Map
+
+| C++ Concept | Java Equivalent | Notes |
+|---|---|---|
+| `epoll` + `epoll_wait()` | `Selector` + `select()` | Same single-threaded event loop pattern |
+| `fcntl(_, O_NONBLOCK)` | `configureBlocking(false)` | Standard Java NIO API |
+| Edge-triggered (`EPOLLET`) | Level-triggered + read-all pattern | Java NIO is level-triggered only; we compensate by reading until buffer is empty |
+| `SO_REUSEADDR` | `StandardSocketOptions.SO_REUSEADDR` | Same semantics |
+| Self-pipe trick for wakeup | Loopback `SocketChannel` wakeup channel | Same concept; Java's `Selector.wakeup()` is unreliable with concurrent `close()` |
+| `errno` / `EAGAIN` | Non-blocking `read()` returning 0 or -1 | Same semantics, different API |
+| RAII destructors | `AutoCloseable` + `close()` | `try-with-resources` for scoped cleanup |
+| CMake + Ninja | Maven | Build system swap |
+| Catch2 (`REQUIRE_NOTHROW`) | JUnit 5 (`assertDoesNotThrow`) | Same assertion semantics |
+| `atomic<int>` port counter | `AtomicInteger` port counter | Same pattern for parallel-safe test ports |
+
+### The Server Class (Java NIO)
+
+The `Server` class in Java uses `java.nio.channels.Selector` — the JVM's multiplexer analogous to `epoll`. The event loop follows the same structure as the C++ version:
+
+```java
+while (running.get()) {
+    int ready = selector.select();      // epoll_wait()
+    // process selected keys
+    for (SelectionKey key : keys) {
+        if (key.isAcceptable())  handleAccept(key);
+        if (key.isReadable())    handleRead(key);
+    }
+}
+```
+
+Key design decisions in the Java port:
+
+1. **Wakeup channel**: Uses a loopback TCP connection (self-pipe trick) to interrupt `select()` on shutdown — mirrors the C++ approach of using an eventfd or self-pipe.
+
+2. **Read-all pattern**: On each `OP_READ` event, the handler reads in a loop until no more data is available (`bytesRead <= 0`). This compensates for the lack of edge-triggered semantics in Java NIO.
+
+3. **HTTP integration**: Unlike the C++ version where HTTP parsing happened in `main.cpp` outside the event loop, the Java port integrates `HttpParser` directly into the `Server`'s `handleRead()` method. This moves the architecture toward the stated goal from the 07-12 engineering entry.
+
+### The Config Class (Java)
+
+The `Config` port is a straightforward translation with a few improvements:
+
+1. **No `XSTR`/`STRINGIFY` macro needed**: Java doesn't have C-style macros. Instead, `Config.resolvePath()` searches multiple well-known locations at runtime.
+
+2. **Config path resolution** (precedence):
+   - `--config <path>` in CLI args
+   - `TURBOLB_CONFIG` environment variable
+   - `$HOME/.turbolb/config.properties`
+   - `.turbolb/config.properties` (current working directory)
+
+3. **`Config.load(String[] args)`** is a static factory that calls `resolvePath()` internally — cleaner than the C++ version where `main()` had to call `Config::load(argc, argv)`.
+
+4. **Switch expression for booleans**: Uses Java 21's `switch` expression for clean boolean parsing.
+
+### The HttpParser Class (Java)
+
+The HTTP parser is a faithful port of the C++ state machine:
+
+- Same 5 states: `REQUEST_LINE → HEADERS → BODY → COMPLETE | ERROR`
+- Same incremental feeding model: `consume()` can be called repeatedly with partial data
+- Headers are lowercased for case-insensitive lookup
+- `getHeader(String name)` provides case-insensitive access
+- `reset()` allows re-use of the parser instance
+
+### The Test Suite
+
+The original C++ test file (`test/test_server.cpp`) had 14 test cases with 33 assertions covering:
+- **Unit tests** (9): construction, initialization, port reuse, stop safety
+- **Integration tests** (5): accept, echo, multiple clients, connect-send-close cycle, stop+restart
+
+The Java test suite expands this to **52 test cases**:
+
+| Test Class | Tests | Focus |
+|---|---|---|
+| `ConfigTest` | 20 | Loading, comments, whitespace, type coercion, booleans, missing keys, path resolution, edge cases |
+| `HttpParserTest` | 20 | Request parsing, headers, body, incremental feeding, error states, reset, edge cases |
+| `ServerTest` | 12 | Construction, initialization, port reuse, accept, multi-client, stop+restart |
+
+Integration tests use **real TCP sockets** — the same approach as the C++ version. A unique port counter (`AtomicInteger` starting at 25000) prevents collisions between tests, identical to the C++ `atomic<int>` approach.
+
+### pom.xml Changes
+
+The original `pom.xml` was a minimal Maven skeleton with JUnit 3.8.1. Changes made:
+
+| Change | Before | After |
+|---|---|---|
+| JUnit | 3.8.1 | JUnit Jupiter 5.10.1 |
+| Java version | default (5/6) | 21 |
+| Compiler plugin | none | `maven-compiler-plugin` 3.11.0 |
+| JAR plugin | none | `maven-jar-plugin` with `mainClass` manifest |
+| Surefire plugin | none | `maven-surefire-plugin` 3.2.3 |
+
+### Makefile Changes
+
+The Makefile was rewritten from a CMake wrapper to a Maven wrapper:
+
+| Command | C++ (CMake) | Java (Maven) |
+|---|---|---|
+| `make build` | `cmake --build build/` | `mvn compile` |
+| `make test` | `cd build && ctest` | `mvn test` |
+| `make run` | `build/TurboLB` | `java -jar target/turbolb-*.jar` |
+| `make clean` | `rm -rf build/` | `rm -rf target/` |
+
+### Key Decisions
+
+| Decision | Why |
+|---|---|
+| **Java NIO over Netty** | Understanding the Selector API is the whole point — same reason the C++ version uses raw epoll instead of libuv. |
+| **Level-triggered with read-all** | Java NIO only supports level-triggered. The read-all loop (`while (read > 0)`) compensates and matches edge-triggered efficiency. |
+| **HttpParser in Server, not main()** | The C++ journal (07-12) explicitly lists this as a future improvement. The Java port implements it directly. |
+| **JUnit 5 over JUnit 3/4** | Modern test framework with better assertions, parameterized tests, and `@TempDir` for isolated file I/O testing. |
+| **52 tests instead of 14** | Each class gets its own focused test file. Many edge cases (empty input, incremental body, byte-by-byte feeding) are now covered. |
+| **Loopback wakeup channel** | Same pattern as the C++ self-pipe trick. `Selector.wakeup()` is documented as unreliable when closing channels concurrently. |
+
+### What I Learned
+
+1. **Java NIO is epoll for the JVM** — The `Selector` API abstracts the same `epoll`/`kqueue`/`IOCP` mechanisms that the C++ version uses directly. The event loop pattern is identical at the architectural level.
+
+2. **Level-triggered vs edge-triggered** — Java NIO doesn't expose edge-triggered mode. This means `select()` may return the same ready event multiple times unless all data is consumed. The fix is to always read in a loop until you'd block — which is exactly what edge-triggered code already does in C++.
+
+3. **`Selector.wakeup()` is not enough** — For graceful shutdown, waking up the selector is only half the battle. The selected keys still need to be processed, and the selector needs to close cleanly. A dedicated wakeup channel (loopback connection) provides deterministic control over the lifecycle.
+
+4. **Maven is more ceremonial than CMake** — A CMake project can be expressed in 30 lines. A Maven `pom.xml` with JAR packaging, manifest, compiler settings, and surefire configuration takes twice that. The `Makefile` wrapper is arguably *more* important for Maven than it was for CMake.
+
+5. **Testing NIO servers needs the same tricks as testing epoll servers** — The wakeup mechanism, dedicated thread, and port counter patterns transferred directly from C++ to Java with no conceptual changes.
+
+6. **Switch expressions make boolean parsing elegant** — Java 21's `switch` with arrow cases is much cleaner than a chain of `if-else` statements, and it's exhaustive at compile time.
+
+### What's Next
+
+The Java port establishes the same foundation as the C++ version. Future work is the same on both sides:
+
+1. Implement backend connection pooling with round-robin.
+2. Add health checks to detect and remove dead backends.
+3. Forward parsed HTTP requests to backends using the parsed URI and headers.
+4. Support keep-alive connections.
