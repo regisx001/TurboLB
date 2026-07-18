@@ -23,9 +23,8 @@ dependency-reduced-pom.xml
 .settings/
 *.sublime-*
 
-# ── VS Code ────────────────────────────────────────────────────
+# ── VS Code (user-specific) ────────────────────────────────────
 .vscode/settings.json
-.vscode/launch.json
 
 # ── OS ─────────────────────────────────────────────────────────
 .DS_Store

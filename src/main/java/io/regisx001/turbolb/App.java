@@ -40,21 +40,22 @@ public class App {
             }
 
             System.out.println("╔══════════════════════════════════════════╗");
-            System.out.println("║          TurboLB — Load Balancer        ║");
+            System.out.println("║          TurboLB — Load Balancer         ║");
             System.out.println("╚══════════════════════════════════════════╝");
             System.out.println("Starting on " + host + ":" + port);
             System.out.println("Debug mode: " + debug);
 
             // ── Start server ──────────────────────────────────────────────
-            Server server = new Server(host, port);
-            server.initialize();
+            try (Server server = new Server(host, port)) {
+                server.initialize();
 
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                System.out.println("\nShutting down...");
-                server.stop();
-            }));
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                    System.out.println("\nShutting down...");
+                    server.stop();
+                }));
 
-            server.run();
+                server.run();
+            }
 
         } catch (IOException e) {
             System.err.println("Fatal: " + e.getMessage());

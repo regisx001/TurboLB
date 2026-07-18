@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "App",
+            "request": "launch",
+            "mainClass": "io.regisx001.turbolb.App",
+            "projectName": "Turbolb"
+        },
+        {
+            "type": "java",
+            "name": "Run TurboLB",
+            "request": "launch",
+            "mainClass": "io.regisx001.turbolb.App",
+            "projectName": "turbolb",
+            "args": ""
+        }
+    ]
+}
