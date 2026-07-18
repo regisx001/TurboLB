@@ -27,10 +27,10 @@ class ConfigTest {
     @Test
     void loadsPropertiesFromFile(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "server.host=127.0.0.1\n" +
+        Files.write(props,
+                ("server.host=127.0.0.1\n" +
                         "server.port=9090\n" +
-                        "server.debug=true\n");
+                        "server.debug=true\n").getBytes());
 
         Config config = Config.load(props.toString());
 
@@ -44,12 +44,12 @@ class ConfigTest {
     @Test
     void ignoresCommentsAndBlankLines(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "# This is a comment\n" +
+        Files.write(props,
+                ("# This is a comment\n" +
                         "; This is also a comment\n" +
                         "\n" +
                         "key=value\n" +
-                        "# another comment\n");
+                        "# another comment\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals("value", config.getString("key"));
@@ -59,9 +59,9 @@ class ConfigTest {
     @Test
     void ignoresHashComments(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "# comment line\n" +
-                        "host=localhost\n");
+        Files.write(props,
+                ("# comment line\n" +
+                        "host=localhost\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals("localhost", config.getString("host"));
@@ -70,9 +70,9 @@ class ConfigTest {
     @Test
     void ignoresSemicolonComments(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "; comment line\n" +
-                        "host=localhost\n");
+        Files.write(props,
+                ("; comment line\n" +
+                        "host=localhost\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals("localhost", config.getString("host"));
@@ -83,7 +83,7 @@ class ConfigTest {
     @Test
     void trimsWhitespaceAroundKeysAndValues(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "  key  =  value  \n");
+        Files.write(props, "  key  =  value  \n".getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals("value", config.getString("key"));
@@ -94,7 +94,7 @@ class ConfigTest {
     @Test
     void getIntReturnsParsedInteger(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "port=8080\n");
+        Files.write(props, "port=8080\n".getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals(8080, config.getInt("port"));
@@ -103,7 +103,7 @@ class ConfigTest {
     @Test
     void getIntWithDefaultReturnsDefaultWhenMissing(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "other=1\n");
+        Files.write(props, "other=1\n".getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals(42, config.getInt("port", 42));
@@ -112,7 +112,7 @@ class ConfigTest {
     @Test
     void getIntThrowsOnNonIntegerValue(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "port=notanumber\n");
+        Files.write(props, "port=notanumber\n".getBytes());
 
         Config config = Config.load(props.toString());
         assertThrows(IllegalArgumentException.class, () -> config.getInt("port"));
@@ -123,8 +123,8 @@ class ConfigTest {
     @Test
     void parsesBooleanTrueVariants(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "a=true\nb=TRUE\nc=yes\nd=YES\ne=1\n");
+        Files.write(props,
+                ("a=true\nb=TRUE\nc=yes\nd=YES\ne=1\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertTrue(config.getBool("a"));
@@ -137,8 +137,8 @@ class ConfigTest {
     @Test
     void parsesBooleanFalseVariants(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "a=false\nb=FALSE\nc=no\nd=NO\ne=0\n");
+        Files.write(props,
+                ("a=false\nb=FALSE\nc=no\nd=NO\ne=0\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertFalse(config.getBool("a"));
@@ -151,7 +151,7 @@ class ConfigTest {
     @Test
     void getBoolThrowsOnInvalidValue(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "flag=maybe\n");
+        Files.write(props, "flag=maybe\n".getBytes());
 
         Config config = Config.load(props.toString());
         assertThrows(IllegalArgumentException.class, () -> config.getBool("flag"));
@@ -160,7 +160,7 @@ class ConfigTest {
     @Test
     void getBoolWithDefaultReturnsDefaultWhenMissing(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "other=1\n");
+        Files.write(props, "other=1\n".getBytes());
 
         Config config = Config.load(props.toString());
         assertTrue(config.getBool("debug", true));
@@ -172,7 +172,7 @@ class ConfigTest {
     @Test
     void getStringThrowsOnMissingKey(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "existing=yes\n");
+        Files.write(props, "existing=yes\n".getBytes());
 
         Config config = Config.load(props.toString());
         assertThrows(IllegalArgumentException.class, () -> config.getString("nonexistent"));
@@ -181,7 +181,7 @@ class ConfigTest {
     @Test
     void getStringWithDefaultReturnsDefaultWhenMissing(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "");
+        Files.write(props, "".getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals("fallback", config.getString("missing", "fallback"));
@@ -192,8 +192,8 @@ class ConfigTest {
     @Test
     void getAllReturnsAllProperties(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "a=1\nb=2\nc=3\n");
+        Files.write(props,
+                ("a=1\nb=2\nc=3\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals(3, config.getAll().size());
@@ -203,7 +203,7 @@ class ConfigTest {
     @Test
     void getAllReturnsDefensiveCopy(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "key=value\n");
+        Files.write(props, "key=value\n".getBytes());
 
         Config config = Config.load(props.toString());
         config.getAll().put("injected", "bad");
@@ -215,7 +215,7 @@ class ConfigTest {
     @Test
     void resolvePathFromCliFlag(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("myconfig.properties");
-        Files.writeString(props, "key=val\n");
+        Files.write(props, "key=val\n".getBytes());
 
         String[] args = { "--config", props.toString() };
         String resolved = Config.resolvePath(args);
@@ -240,7 +240,7 @@ class ConfigTest {
     @Test
     void loadFromCliFlag(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props, "server.port=9999\n");
+        Files.write(props, "server.port=9999\n".getBytes());
 
         Config config = Config.load(new String[] { "--config", props.toString() });
         assertEquals(9999, config.getInt("server.port"));
@@ -258,7 +258,7 @@ class ConfigTest {
     @Test
     void emptyFileProducesEmptyConfig(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("empty.properties");
-        Files.writeString(props, "");
+        Files.write(props, "".getBytes());
 
         Config config = Config.load(props.toString());
         assertTrue(config.getAll().isEmpty());
@@ -269,9 +269,9 @@ class ConfigTest {
     @Test
     void ignoresLinesWithoutEquals(@TempDir Path tempDir) throws IOException {
         Path props = tempDir.resolve("test.properties");
-        Files.writeString(props,
-                "justtext\n" +
-                        "key=value\n");
+        Files.write(props,
+                ("justtext\n" +
+                        "key=value\n").getBytes());
 
         Config config = Config.load(props.toString());
         assertEquals(1, config.getAll().size());

@@ -32,7 +32,11 @@ class ServerTest {
 
     @Test
     void serverConstructionDoesNotThrow() {
-        assertDoesNotThrow(() -> new Server("127.0.0.1", nextPort()));
+        assertDoesNotThrow(() -> {
+            try (Server s = new Server("127.0.0.1", nextPort())) {
+                // constructor only — no resources opened yet
+            }
+        });
     }
 
     @Test
@@ -65,20 +69,21 @@ class ServerTest {
     @Test
     void stopIsSafeWithoutInitialize() {
         Server server = new Server("127.0.0.1", nextPort());
-        assertDoesNotThrow(server::stop);
+        assertDoesNotThrow(server::close);
     }
 
     @Test
     void stopIsSafeBeforeRun() throws IOException {
         Server server = new Server("127.0.0.1", nextPort());
         server.initialize();
-        assertDoesNotThrow(server::stop);
+        assertDoesNotThrow(server::close);
     }
 
     @Test
     void isRunningReturnsFalseInitially() {
         Server server = new Server("127.0.0.1", nextPort());
         assertFalse(server.isRunning());
+        server.close();
     }
 
     @Test
@@ -97,6 +102,7 @@ class ServerTest {
     void getPortReturnsZeroBeforeInitialize() {
         Server server = new Server("127.0.0.1", nextPort());
         assertEquals(0, server.getPort());
+        server.close();
     }
 
     // ── Port Reuse (SO_REUSEADDR equivalent) ───────────────────────────────
@@ -162,7 +168,7 @@ class ServerTest {
                         "Response should contain success indicator, got: " + response);
             }
         } finally {
-            server.stop();
+            server.close();
         }
     }
 
@@ -202,7 +208,7 @@ class ServerTest {
             assertTrue(allDone.await(5, TimeUnit.SECONDS),
                     "All " + numClients + " clients should complete within timeout");
         } finally {
-            server.stop();
+            server.close();
         }
     }
 
@@ -229,7 +235,7 @@ class ServerTest {
                 }
             }
         } finally {
-            server.stop();
+            server.close();
         }
     }
 
@@ -246,7 +252,7 @@ class ServerTest {
         try (Socket socket = new Socket("127.0.0.1", port)) {
             assertTrue(socket.isConnected());
         }
-        server.stop();
+        server.close();
 
         // Allow TIME_WAIT to clear
         Thread.sleep(500);
@@ -271,7 +277,7 @@ class ServerTest {
                 assertTrue(response.contains("200 OK") || response.contains("Request logged"));
             }
         } finally {
-            server2.stop();
+            server2.close();
         }
     }
 }
