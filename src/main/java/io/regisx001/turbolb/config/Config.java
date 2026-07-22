@@ -4,9 +4,15 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import io.regisx001.turbolb.domain.Backend;
 
 /**
  * Configuration loader for .properties files.
@@ -224,5 +230,36 @@ public class Config {
      */
     public Map<String, String> getAll() {
         return new HashMap<>(properties);
+    }
+
+    public List<Backend> getBackends() {
+        Map<Integer, Map<String, String>> grouped = new TreeMap<>();
+
+        Pattern pattern = Pattern.compile("^backend\\.(\\d+)\\.(.+)$");
+
+        for (Map.Entry<String, String> entry : properties.entrySet()) {
+            Matcher matcher = pattern.matcher(entry.getKey());
+
+            if (!matcher.matches()) {
+                continue;
+            }
+
+            int index = Integer.parseInt(matcher.group(1));
+            String property = matcher.group(2);
+
+            grouped
+                    .computeIfAbsent(index, k -> new HashMap<>())
+                    .put(property, entry.getValue());
+        }
+
+        List<Backend> backends = new ArrayList<>();
+
+        for (Map<String, String> backend : grouped.values()) {
+            backends.add(new Backend(
+                    backend.get("host"),
+                    Integer.parseInt(backend.get("port"))));
+        }
+
+        return backends;
     }
 }

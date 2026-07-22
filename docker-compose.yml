@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   echo-server:
     build:
@@ -8,4 +6,4 @@ services:
     container_name: turbolb-echo
     ports:
       - "8080:8080"
-    restart: unless-stopped
+    # restart: unless-stopped
