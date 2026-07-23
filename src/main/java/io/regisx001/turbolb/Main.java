@@ -2,6 +2,7 @@ package io.regisx001.turbolb;
 
 import java.io.IOException;
 
+import io.regisx001.turbolb.server.BackendServer;
 import io.regisx001.turbolb.server.Server;
 
 import io.regisx001.turbolb.config.Config;
@@ -13,7 +14,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class Main {
-    private static final Logger LOG = Logger.getLogger(App.class.getName());
+    private static final Logger LOG = Logger.getLogger(TurboLB.class.getName());
 
     public static void main(String[] args) {
         try {
@@ -29,6 +30,8 @@ public class Main {
             for (Backend backend : backends) {
                 System.out.println(backend.host() + ":" + backend.port());
             }
+
+            BackendServer backendServer = new BackendServer(backends.getFirst().host(), backends.getFirst().port());
 
         } catch (IOException e) {
             System.err.println("Fatal: " + e.getMessage());

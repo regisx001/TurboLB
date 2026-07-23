@@ -46,7 +46,7 @@
         <configuration>
           <archive>
             <manifest>
-              <mainClass>io.regisx001.turbolb.App</mainClass>
+              <mainClass>io.regisx001.turbolb.TurboLB</mainClass>
             </manifest>
           </archive>
         </configuration>

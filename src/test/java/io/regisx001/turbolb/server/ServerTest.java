@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.nio.channels.SocketChannel;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -13,12 +14,9 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Unit and integration tests for the {@link Server} class.
  *
- * Ported from the original C++ test_server.cpp:
- * - Unit tests: construction, initialization, port reuse, stop safety
- * - Integration tests: accept connections, exchange data, multiple clients,
- * connect-send-close cycle, stop + restart
- *
  * Uses unique ports per test via an atomic counter to avoid collisions.
+ * Integration tests verify the event-dispatch contract via a
+ * {@link TestHandler} instead of checking HTTP responses.
  */
 class ServerTest {
 
@@ -28,12 +26,35 @@ class ServerTest {
         return portCounter.incrementAndGet();
     }
 
+    /** A no-op handler for unit tests that only test lifecycle. */
+    private static final ServerHandler NOOP_HANDLER = new ServerHandler() {
+        @Override
+        public void onAccept(SocketChannel c) {
+        }
+
+        @Override
+        public void onData(SocketChannel c, byte[] d) {
+        }
+
+        @Override
+        public void onWriteReady(SocketChannel c) {
+        }
+
+        @Override
+        public void onConnectReady(SocketChannel c) {
+        }
+
+        @Override
+        public void onDisconnect(SocketChannel c) {
+        }
+    };
+
     // ── Unit Tests ─────────────────────────────────────────────────────────
 
     @Test
     void serverConstructionDoesNotThrow() {
         assertDoesNotThrow(() -> {
-            try (Server s = new Server("127.0.0.1", nextPort())) {
+            try (Server s = new Server("127.0.0.1", nextPort(), NOOP_HANDLER)) {
                 // constructor only — no resources opened yet
             }
         });
@@ -41,14 +62,13 @@ class ServerTest {
 
     @Test
     void serverDestructorIsSafeWithoutInitialize() {
-        // Create and let GC clean up — should not throw
-        Server server = new Server("127.0.0.1", nextPort());
+        Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
         server.close();
     }
 
     @Test
     void serverInitializeSucceedsOnFreePort() throws IOException {
-        Server server = new Server("127.0.0.1", nextPort());
+        Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
         try {
             assertDoesNotThrow(server::initialize);
         } finally {
@@ -58,9 +78,8 @@ class ServerTest {
 
     @Test
     void multipleServersCanBeCreatedAndDestroyed() throws IOException {
-        // Create and destroy multiple servers in sequence
         for (int i = 0; i < 5; i++) {
-            Server server = new Server("127.0.0.1", nextPort());
+            Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
             server.initialize();
             server.close();
         }
@@ -68,20 +87,20 @@ class ServerTest {
 
     @Test
     void stopIsSafeWithoutInitialize() {
-        Server server = new Server("127.0.0.1", nextPort());
+        Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
         assertDoesNotThrow(server::close);
     }
 
     @Test
     void stopIsSafeBeforeRun() throws IOException {
-        Server server = new Server("127.0.0.1", nextPort());
+        Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
         server.initialize();
         assertDoesNotThrow(server::close);
     }
 
     @Test
     void isRunningReturnsFalseInitially() {
-        Server server = new Server("127.0.0.1", nextPort());
+        Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
         assertFalse(server.isRunning());
         server.close();
     }
@@ -89,7 +108,7 @@ class ServerTest {
     @Test
     void getPortReturnsPortAfterInitialize() throws IOException {
         int port = nextPort();
-        Server server = new Server("127.0.0.1", port);
+        Server server = new Server("127.0.0.1", port, NOOP_HANDLER);
         try {
             server.initialize();
             assertEquals(port, server.getPort());
@@ -100,23 +119,22 @@ class ServerTest {
 
     @Test
     void getPortReturnsZeroBeforeInitialize() {
-        Server server = new Server("127.0.0.1", nextPort());
+        Server server = new Server("127.0.0.1", nextPort(), NOOP_HANDLER);
         assertEquals(0, server.getPort());
         server.close();
     }
 
-    // ── Port Reuse (SO_REUSEADDR equivalent) ───────────────────────────────
+    // ── Port Reuse ─────────────────────────────────────────────────────────
 
     @Test
     void portCanBeReusedAfterClose() throws IOException {
         int port = nextPort();
 
-        Server server = new Server("127.0.0.1", port);
+        Server server = new Server("127.0.0.1", port, NOOP_HANDLER);
         server.initialize();
         server.close();
 
-        // Same port should be reusable immediately
-        Server server2 = new Server("127.0.0.1", port);
+        Server server2 = new Server("127.0.0.1", port, NOOP_HANDLER);
         try {
             assertDoesNotThrow(server2::initialize);
         } finally {
@@ -129,7 +147,7 @@ class ServerTest {
         int port = nextPort();
 
         for (int i = 0; i < 5; i++) {
-            Server server = new Server("127.0.0.1", port);
+            Server server = new Server("127.0.0.1", port, NOOP_HANDLER);
             try {
                 server.initialize();
             } finally {
@@ -141,32 +159,34 @@ class ServerTest {
     // ── Integration Tests ──────────────────────────────────────────────────
 
     @Test
-    void acceptsConnectionAndResponds() throws IOException, InterruptedException {
+    void serverAcceptsConnectionAndReadsData() throws IOException, InterruptedException {
         int port = nextPort();
-        Server server = new Server("127.0.0.1", port);
+        TestHandler handler = new TestHandler();
+        Server server = new Server("127.0.0.1", port, handler);
         server.initialize();
         server.start();
 
         try {
-            // Wait for server to be ready
-            Thread.sleep(200);
+            Thread.sleep(200); // let server bind
 
             try (Socket socket = new Socket("127.0.0.1", port)) {
                 assertTrue(socket.isConnected());
 
-                // Send HTTP request
-                String request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-                socket.getOutputStream().write(request.getBytes());
+                assertTrue(handler.accepted.await(2, TimeUnit.SECONDS),
+                        "Server should accept a connection");
+
+                String payload = "hello from test";
+                socket.getOutputStream().write(payload.getBytes());
                 socket.getOutputStream().flush();
 
-                // Read response
-                byte[] buf = new byte[4096];
-                int bytesRead = socket.getInputStream().read(buf);
-                String response = new String(buf, 0, bytesRead);
-
-                assertTrue(response.contains("200 OK") || response.contains("Request logged"),
-                        "Response should contain success indicator, got: " + response);
+                assertTrue(handler.dataReceived.await(2, TimeUnit.SECONDS),
+                        "Server should read data from client");
+                assertNotNull(handler.receivedData);
+                assertEquals(payload, new String(handler.receivedData));
             }
+
+            assertTrue(handler.disconnected.await(2, TimeUnit.SECONDS),
+                    "Server should detect client disconnect");
         } finally {
             server.close();
         }
@@ -175,38 +195,37 @@ class ServerTest {
     @Test
     void handlesMultipleConcurrentClients() throws IOException, InterruptedException {
         int port = nextPort();
-        Server server = new Server("127.0.0.1", port);
+        MultiClientHandler handler = new MultiClientHandler(5);
+        Server server = new Server("127.0.0.1", port, handler);
         server.initialize();
         server.start();
 
         try {
-            Thread.sleep(200);
-
             int numClients = 5;
-            CountDownLatch allDone = new CountDownLatch(numClients);
+            CountDownLatch allConnected = new CountDownLatch(numClients);
 
             for (int i = 0; i < numClients; i++) {
                 int clientId = i;
                 new Thread(() -> {
                     try (Socket socket = new Socket("127.0.0.1", port)) {
-                        String request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-                        socket.getOutputStream().write(request.getBytes());
+                        allConnected.countDown();
+                        String payload = "data from client " + clientId;
+                        socket.getOutputStream().write(payload.getBytes());
                         socket.getOutputStream().flush();
-
-                        byte[] buf = new byte[4096];
-                        int bytesRead = socket.getInputStream().read(buf);
-                        String response = new String(buf, 0, bytesRead);
-                        assertNotNull(response);
-                    } catch (IOException e) {
+                        // Keep connection open briefly so the server can read
+                        Thread.sleep(500);
+                    } catch (Exception e) {
                         fail("Client " + clientId + " failed: " + e.getMessage());
-                    } finally {
-                        allDone.countDown();
                     }
                 }).start();
             }
 
-            assertTrue(allDone.await(5, TimeUnit.SECONDS),
-                    "All " + numClients + " clients should complete within timeout");
+            assertTrue(allConnected.await(3, TimeUnit.SECONDS),
+                    "All clients should connect");
+            assertTrue(handler.allDataReceived.await(5, TimeUnit.SECONDS),
+                    "Server should receive data from all clients");
+            assertEquals(numClients, handler.acceptCount.get(),
+                    "All clients should be accepted");
         } finally {
             server.close();
         }
@@ -215,24 +234,22 @@ class ServerTest {
     @Test
     void connectSendCloseCycleRepeats() throws IOException, InterruptedException {
         int port = nextPort();
-        Server server = new Server("127.0.0.1", port);
+        TestHandler handler = new TestHandler();
+        Server server = new Server("127.0.0.1", port, handler);
         server.initialize();
         server.start();
 
         try {
-            Thread.sleep(200);
-
             for (int cycle = 0; cycle < 3; cycle++) {
-                try (Socket socket = new Socket("127.0.0.1", port)) {
-                    String request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-                    socket.getOutputStream().write(request.getBytes());
-                    socket.getOutputStream().flush();
+                String payload = "cycle " + cycle;
 
-                    byte[] buf = new byte[4096];
-                    int bytesRead = socket.getInputStream().read(buf);
-                    String response = new String(buf, 0, bytesRead);
-                    assertNotNull(response);
+                try (Socket socket = new Socket("127.0.0.1", port)) {
+                    socket.getOutputStream().write(payload.getBytes());
+                    socket.getOutputStream().flush();
                 }
+
+                // Each cycle: accept + data + disconnect
+                Thread.sleep(300);
             }
         } finally {
             server.close();
@@ -244,13 +261,14 @@ class ServerTest {
         int port = nextPort();
 
         // First server instance
-        Server server = new Server("127.0.0.1", port);
+        TestHandler handler1 = new TestHandler();
+        Server server = new Server("127.0.0.1", port, handler1);
         server.initialize();
         server.start();
-        Thread.sleep(200);
 
         try (Socket socket = new Socket("127.0.0.1", port)) {
             assertTrue(socket.isConnected());
+            assertTrue(handler1.accepted.await(2, TimeUnit.SECONDS));
         }
         server.close();
 
@@ -258,26 +276,93 @@ class ServerTest {
         Thread.sleep(500);
 
         // Second server instance on same port
-        Server server2 = new Server("127.0.0.1", port);
+        TestHandler handler2 = new TestHandler();
+        Server server2 = new Server("127.0.0.1", port, handler2);
         try {
             server2.initialize();
             server2.start();
-            Thread.sleep(200);
 
             try (Socket socket = new Socket("127.0.0.1", port)) {
                 assertTrue(socket.isConnected());
 
-                String request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-                socket.getOutputStream().write(request.getBytes());
+                String payload = "hello after restart";
+                socket.getOutputStream().write(payload.getBytes());
                 socket.getOutputStream().flush();
 
-                byte[] buf = new byte[4096];
-                int bytesRead = socket.getInputStream().read(buf);
-                String response = new String(buf, 0, bytesRead);
-                assertTrue(response.contains("200 OK") || response.contains("Request logged"));
+                assertTrue(handler2.dataReceived.await(2, TimeUnit.SECONDS),
+                        "Second server instance should read data");
+                assertEquals(payload, new String(handler2.receivedData));
             }
         } finally {
             server2.close();
+        }
+    }
+
+    // ── Test Handlers ──────────────────────────────────────────────────────
+
+    /** Records a single accept / data / disconnect cycle. */
+    private static class TestHandler implements ServerHandler {
+        final CountDownLatch accepted = new CountDownLatch(1);
+        final CountDownLatch dataReceived = new CountDownLatch(1);
+        final CountDownLatch disconnected = new CountDownLatch(1);
+        volatile byte[] receivedData;
+
+        @Override
+        public void onAccept(SocketChannel clientChannel) {
+            accepted.countDown();
+        }
+
+        @Override
+        public void onData(SocketChannel channel, byte[] data) {
+            receivedData = data;
+            dataReceived.countDown();
+        }
+
+        @Override
+        public void onWriteReady(SocketChannel channel) {
+        }
+
+        @Override
+        public void onConnectReady(SocketChannel channel) {
+        }
+
+        @Override
+        public void onDisconnect(SocketChannel channel) {
+            disconnected.countDown();
+        }
+    }
+
+    /** Counts accepts and data events across multiple clients. */
+    private static class MultiClientHandler implements ServerHandler {
+        final AtomicInteger acceptCount = new AtomicInteger(0);
+        final CountDownLatch allDataReceived;
+        final int expectedClients;
+
+        MultiClientHandler(int expectedClients) {
+            this.expectedClients = expectedClients;
+            this.allDataReceived = new CountDownLatch(expectedClients);
+        }
+
+        @Override
+        public void onAccept(SocketChannel clientChannel) {
+            acceptCount.incrementAndGet();
+        }
+
+        @Override
+        public void onData(SocketChannel channel, byte[] data) {
+            allDataReceived.countDown();
+        }
+
+        @Override
+        public void onWriteReady(SocketChannel channel) {
+        }
+
+        @Override
+        public void onConnectReady(SocketChannel channel) {
+        }
+
+        @Override
+        public void onDisconnect(SocketChannel channel) {
         }
     }
 }

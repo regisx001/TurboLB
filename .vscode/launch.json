@@ -3,6 +3,13 @@
     "configurations": [
         {
             "type": "java",
+            "name": "TurboLB",
+            "request": "launch",
+            "mainClass": "io.regisx001.turbolb.TurboLB",
+            "projectName": "Turbolb"
+        },
+        {
+            "type": "java",
             "name": "Main",
             "request": "launch",
             "mainClass": "io.regisx001.turbolb.Main",

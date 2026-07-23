@@ -2,8 +2,10 @@ package io.regisx001.turbolb;
 
 import io.regisx001.turbolb.config.Config;
 import io.regisx001.turbolb.server.Server;
+import io.regisx001.turbolb.server.ServerHandler;
 
 import java.io.IOException;
+import java.nio.channels.SocketChannel;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -22,9 +24,9 @@ import java.util.logging.Logger;
  *   TURBOLB_CONFIG=/path/to/config.properties java -jar Turbolb.jar
  * </pre>
  */
-public class App {
+public class TurboLB {
 
-    private static final Logger LOG = Logger.getLogger(App.class.getName());
+    private static final Logger LOG = Logger.getLogger(TurboLB.class.getName());
 
     public static void main(String[] args) {
         try {
@@ -45,8 +47,45 @@ public class App {
             System.out.println("Starting on " + host + ":" + port);
             System.out.println("Debug mode: " + debug);
 
+            // ── Server handler (to be replaced by proxy logic in Stage 1) ─
+            ServerHandler handler = new ServerHandler() {
+                @Override
+                public void onAccept(SocketChannel clientChannel) {
+                    LOG.info("New client connected: " + safeRemote(clientChannel));
+                }
+
+                @Override
+                public void onData(SocketChannel channel, byte[] data) {
+                    LOG.fine("Received " + data.length + " bytes from "
+                            + safeRemote(channel) + " — no proxy configured yet");
+                }
+
+                @Override
+                public void onWriteReady(SocketChannel channel) {
+                    // No-op until proxy stage
+                }
+
+                @Override
+                public void onConnectReady(SocketChannel channel) {
+                    // No-op until proxy stage
+                }
+
+                @Override
+                public void onDisconnect(SocketChannel channel) {
+                    LOG.info("Client disconnected: " + safeRemote(channel));
+                }
+
+                private String safeRemote(SocketChannel ch) {
+                    try {
+                        return ch.getRemoteAddress().toString();
+                    } catch (IOException e) {
+                        return "unknown";
+                    }
+                }
+            };
+
             // ── Start server ──────────────────────────────────────────────
-            try (Server server = new Server(host, port)) {
+            try (Server server = new Server(host, port, handler)) {
                 server.initialize();
 
                 Runtime.getRuntime().addShutdownHook(new Thread(() -> {

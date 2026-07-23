@@ -1,7 +1,6 @@
 package io.regisx001.turbolb.server;
 
-import io.regisx001.turbolb.http.HttpParser;
-
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
@@ -10,7 +9,6 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
-import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -20,19 +18,24 @@ import java.util.logging.Logger;
 /**
  * Event-driven TCP server using Java NIO (Selector).
  *
+ * <p>
  * Analogous to the C++ epoll-based Server, this class uses
  * {@link Selector} for non-blocking I/O multiplexing. It is
- * single-threaded — the entire event loop runs in one thread,
- * matching the architecture described in the engineering journal.
+ * single-threaded — the entire event loop runs in one thread.
  *
- * Features:
+ * <p>
+ * This class owns only networking concerns:
  * <ul>
- * <li>Non-blocking {@link ServerSocketChannel} for listening</li>
- * <li>{@link Selector} for event notification (analogous to epoll)</li>
- * <li>Edge-style handling: read until EAGAIN-equivalent on each wakeup</li>
- * <li>HTTP request parsing via {@link HttpParser}</li>
+ * <li>Initialise the listening socket</li>
+ * <li>Run the selector event loop</li>
+ * <li>Accept new client connections</li>
+ * <li>Dispatch read / write / connect events to a {@link ServerHandler}</li>
  * <li>Graceful shutdown via an internal wakeup channel</li>
  * </ul>
+ *
+ * <p>
+ * Protocol logic, backend selection, proxying, and response generation
+ * are the responsibility of the {@link ServerHandler} implementation.
  */
 public class Server implements AutoCloseable {
 
@@ -42,6 +45,7 @@ public class Server implements AutoCloseable {
 
     private final String host;
     private final int port;
+    private final ServerHandler handler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private ServerSocketChannel serverChannel;
@@ -56,12 +60,14 @@ public class Server implements AutoCloseable {
     /**
      * Creates a new Server instance bound to the given address.
      *
-     * @param host the bind address
-     * @param port the bind port
+     * @param host    the bind address
+     * @param port    the bind port
+     * @param handler the handler for application-level events
      */
-    public Server(String host, int port) {
+    public Server(String host, int port, ServerHandler handler) {
         this.host = host;
         this.port = port;
+        this.handler = handler;
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -84,9 +90,6 @@ public class Server implements AutoCloseable {
         serverChannel.register(selector, SelectionKey.OP_ACCEPT);
 
         // ── Wakeup channel (self-pipe trick for Java NIO) ──────────────────
-        // We use a loopback connection to interrupt selector.select()
-        // when stop() is called, since Selector.wakeup() is unreliable
-        // with concurrent close() calls.
         setupWakeupChannel();
 
         LOG.info("Server initialized on " + host + ":" + port);
@@ -130,7 +133,6 @@ public class Server implements AutoCloseable {
      */
     public void stop() {
         if (!running.compareAndSet(true, false)) {
-            // Not running — just clean up and return
             cleanup();
             return;
         }
@@ -178,6 +180,14 @@ public class Server implements AutoCloseable {
         return 0;
     }
 
+    /**
+     * Exposes the internal {@link Selector} so handlers can register
+     * channels or modify interest ops on existing {@link SelectionKey}s.
+     */
+    public Selector getSelector() {
+        return selector;
+    }
+
     // ── Event Loop ────────────────────────────────────────────────────────
 
     private void eventLoop() {
@@ -201,8 +211,12 @@ public class Server implements AutoCloseable {
 
                     if (key.isAcceptable()) {
                         handleAccept(key);
+                    } else if (key.isConnectable()) {
+                        handleConnect(key);
                     } else if (key.isReadable()) {
                         handleRead(key);
+                    } else if (key.isWritable()) {
+                        handleWrite(key);
                     }
                 }
             }
@@ -217,81 +231,97 @@ public class Server implements AutoCloseable {
 
     // ── I/O Handlers ──────────────────────────────────────────────────────
 
+    /**
+     * Accepts all pending connections on the listening socket.
+     *
+     * <p>
+     * Internal wakeup-channel accepts are handled silently. Real client
+     * connections are registered for {@code OP_READ} and dispatched to
+     * {@link ServerHandler#onAccept(SocketChannel)}.
+     */
     private void handleAccept(SelectionKey key) throws IOException {
         ServerSocketChannel serverChannel = (ServerSocketChannel) key.channel();
         SocketChannel clientChannel;
 
-        // Accept all pending connections (edge-style, though Java NIO
-        // is level-triggered by default — this still minimises wakeups)
         while ((clientChannel = serverChannel.accept()) != null) {
             clientChannel.configureBlocking(false);
+
+            if (serverChannel == wakeupServerChannel) {
+                // Internal wakeup channel — complete the handshake silently
+                wakeupServerSide = clientChannel;
+                clientChannel.register(selector, SelectionKey.OP_READ);
+                continue;
+            }
+
             clientChannel.register(selector, SelectionKey.OP_READ);
-            LOG.fine("Accepted connection from " + clientChannel.getRemoteAddress());
+            LOG.fine("Accepted connection from " + safeRemoteAddress(clientChannel));
+            handler.onAccept(clientChannel);
         }
     }
 
+    /**
+     * Handles a connectable event — an outbound connection handshake completed.
+     *
+     * <p>
+     * Internal wakeup-channel connects are completed silently. Real
+     * connections are dispatched to
+     * {@link ServerHandler#onConnectReady(SocketChannel)}.
+     */
+    private void handleConnect(SelectionKey key) throws IOException {
+        SocketChannel channel = (SocketChannel) key.channel();
+
+        if (channel == wakeupClientChannel) {
+            // Wakeup channel connection — complete handshake, register for reads
+            if (channel.finishConnect()) {
+                channel.register(selector, SelectionKey.OP_READ);
+            }
+            return;
+        }
+
+        if (channel.finishConnect()) {
+            LOG.fine("Outbound connection established: " + safeRemoteAddress(channel));
+            handler.onConnectReady(channel);
+        }
+    }
+
+    /**
+     * Reads all available data from the channel, then dispatches to
+     * the handler. If the peer closed the connection, the channel is
+     * closed and the handler is notified via {@link ServerHandler#onDisconnect}.
+     */
     private void handleRead(SelectionKey key) throws IOException {
-        SocketChannel clientChannel = (SocketChannel) key.channel();
+        SocketChannel channel = (SocketChannel) key.channel();
         ByteBuffer buf = ByteBuffer.allocate(BUFFER_SIZE);
-        StringBuilder requestData = new StringBuilder();
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
 
-        // Read all available data (analogous to edge-triggered reading)
         int bytesRead;
-        boolean remoteClosed = false;
-
-        while ((bytesRead = clientChannel.read(buf)) > 0) {
+        while ((bytesRead = channel.read(buf)) > 0) {
             buf.flip();
-            byte[] data = new byte[buf.remaining()];
-            buf.get(data);
-            requestData.append(new String(data, StandardCharsets.UTF_8));
+            byte[] chunk = new byte[buf.remaining()];
+            buf.get(chunk);
+            data.write(chunk, 0, chunk.length);
             buf.clear();
         }
 
+        if (data.size() > 0) {
+            handler.onData(channel, data.toByteArray());
+        }
+
         if (bytesRead == -1) {
-            remoteClosed = true;
-        }
-
-        if (requestData.length() > 0) {
-            String rawRequest = requestData.toString();
-            LOG.fine("Received " + rawRequest.length() + " bytes from " + safeRemoteAddress(clientChannel));
-
-            // Parse the HTTP request
-            HttpParser parser = new HttpParser();
-            HttpParser.State result = parser.consume(rawRequest);
-
-            switch (result) {
-                case COMPLETE: {
-                    logParsedRequest(parser, clientChannel);
-
-                    String httpResponse = buildHttpResponse(parser);
-                    ByteBuffer responseBuf = ByteBuffer.wrap(httpResponse.getBytes(StandardCharsets.UTF_8));
-                    clientChannel.write(responseBuf);
-                    break;
-                }
-                case ERROR: {
-                    LOG.warning("Malformed request from " + safeRemoteAddress(clientChannel));
-                    String errorResponse = "HTTP/1.1 400 Bad Request\r\n" +
-                            "Content-Length: 15\r\n" +
-                            "Connection: close\r\n" +
-                            "\r\n" +
-                            "400 Bad Request";
-                    ByteBuffer responseBuf = ByteBuffer.wrap(errorResponse.getBytes(StandardCharsets.UTF_8));
-                    clientChannel.write(responseBuf);
-                    break;
-                }
-                default: {
-                    // Partial data — wait for more
-                    LOG.fine("Partial request (" + result + "), waiting for more data");
-                    return;
-                }
-            }
-        }
-
-        if (remoteClosed) {
-            LOG.fine("Client disconnected: " + safeRemoteAddress(clientChannel));
+            LOG.fine("Client disconnected: " + safeRemoteAddress(channel));
             key.cancel();
-            clientChannel.close();
+            channel.close();
+            handler.onDisconnect(channel);
         }
+    }
+
+    /**
+     * Handles a writable event — dispatched when a channel previously
+     * registered for {@code OP_WRITE} has buffer space available.
+     */
+    private void handleWrite(SelectionKey key) throws IOException {
+        SocketChannel channel = (SocketChannel) key.channel();
+        handler.onWriteReady(channel);
     }
 
     // ── Wakeup Channel (Self-Pipe Trick) ──────────────────────────────────
@@ -309,20 +339,13 @@ public class Server implements AutoCloseable {
         wakeupServerChannel.bind(new InetSocketAddress("127.0.0.1", 0));
         wakeupServerChannel.register(selector, SelectionKey.OP_ACCEPT);
 
-        // Connect a client to ourselves
         int wakeupPort = ((InetSocketAddress) wakeupServerChannel.getLocalAddress()).getPort();
         wakeupClientChannel = SocketChannel.open();
         wakeupClientChannel.configureBlocking(false);
         wakeupClientChannel.connect(new InetSocketAddress("127.0.0.1", wakeupPort));
 
-        // Register for OP_CONNECT to complete the handshake
         wakeupClientChannel.register(selector, SelectionKey.OP_CONNECT);
     }
-
-    /**
-     * In the event loop, accept the wakeup server side and
-     * register it for reads (handled via the main accept logic).
-     */
 
     // ── Cleanup ────────────────────────────────────────────────────────────
 
@@ -368,32 +391,7 @@ public class Server implements AutoCloseable {
         stop();
     }
 
-    // ── HTTP Response Building ─────────────────────────────────────────────
-
-    private static String buildHttpResponse(HttpParser parser) {
-        String body = "Request logged!\n";
-        return "HTTP/1.1 200 OK\r\n" +
-                "Content-Type: text/plain\r\n" +
-                "Content-Length: " + body.length() + "\r\n" +
-                "Connection: close\r\n" +
-                "\r\n" +
-                body;
-    }
-
-    private static void logParsedRequest(HttpParser parser, SocketChannel clientChannel) {
-        LOG.info("\n===== Client connected: " + safeRemoteAddress(clientChannel) + " =====" +
-                "\n--- Parsed HTTP Request ---" +
-                "\nMethod:  " + parser.getMethod() +
-                "\nURI:     " + parser.getUri() +
-                "\nVersion: " + parser.getVersion() +
-                "\nHeaders:");
-        parser.getHeaders().forEach((key, value) -> LOG.info("  " + key + ": " + value));
-        if (parser.getBody() != null && !parser.getBody().isEmpty()) {
-            LOG.info("Body (" + parser.getBody().length() + " bytes):");
-            LOG.info(parser.getBody());
-        }
-        LOG.info("--------------------------");
-    }
+    // ── Utilities ──────────────────────────────────────────────────────────
 
     private static String safeRemoteAddress(SocketChannel channel) {
         try {
